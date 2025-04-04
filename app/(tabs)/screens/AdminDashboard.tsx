@@ -2,25 +2,33 @@ import React, { useState, useEffect } from "react";
 import { View, Text, TextInput, FlatList, Alert, TouchableOpacity } from "react-native";
 import { Picker } from "@react-native-picker/picker";
 import { firestore, auth } from "../../../utils/firebase";
-import { collection, addDoc, query, onSnapshot, deleteDoc, doc, updateDoc, setDoc } from "firebase/firestore";
+import {
+  collection,
+  query,
+  onSnapshot,
+  deleteDoc,
+  doc,
+  updateDoc,
+  setDoc,
+} from "firebase/firestore";
 import { createUserWithEmailAndPassword, signOut } from "firebase/auth";
 import { useNavigation } from "@react-navigation/native";
 import { StackNavigationProp } from "@react-navigation/stack";
 import tw from "tailwind-react-native-classnames";
 
-// Define the types for your navigation stack
+// Navigation type
 export type RootStackParamList = {
   Login: undefined;
   AdminDashboard: undefined;
 };
 
-// Define User Interface
 interface User {
   id: string;
   name: string;
   email: string;
   role: "Manager" | "User";
-  managerId?: string; // Stores manager's ID if the user is assigned to a manager
+  managerId?: string;
+  expoPushToken?: string;
 }
 
 const AdminDashboard = () => {
@@ -32,10 +40,8 @@ const AdminDashboard = () => {
   const [role, setRole] = useState<"Manager" | "User">("User");
   const [selectedManager, setSelectedManager] = useState<string>("");
 
-  // Use StackNavigationProp with RootStackParamList
   const navigation = useNavigation<StackNavigationProp<RootStackParamList>>();
 
-  // users and managers from Firestore
   useEffect(() => {
     const userQuery = query(collection(firestore, "users"));
     const unsubscribe = onSnapshot(userQuery, (snapshot) => {
@@ -43,18 +49,29 @@ const AdminDashboard = () => {
         id: doc.id,
         ...(doc.data() as Omit<User, "id">),
       }));
-
       setUsers(userList);
-
-      // Filter and store managers
-      const managerList = userList.filter((user) => user.role === "Manager");
-      setManagers(managerList);
+      setManagers(userList.filter((user) => user.role === "Manager"));
     });
-
     return () => unsubscribe();
   }, []);
 
-  // Function to Add User (Manager or User)
+  // 🔔 Push Notification Helper
+  const sendPushNotification = async (expoPushToken: string, title: string, body: string) => {
+    await fetch("https://exp.host/--/api/v2/push/send", {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        to: expoPushToken,
+        sound: "default",
+        title,
+        body,
+      }),
+    });
+  };
+
   const addUser = async () => {
     if (!name.trim() || !email.trim() || !password.trim()) {
       Alert.alert("Error", "All fields are required.");
@@ -62,20 +79,18 @@ const AdminDashboard = () => {
     }
 
     try {
-      // Create Firebase Authentication
       const userCredential = await createUserWithEmailAndPassword(auth, email, password);
       const userId = userCredential.user.uid;
 
-      // save user data to Firestore
       await setDoc(doc(firestore, "users", userId), {
         uid: userId,
         name: name.trim(),
         email: email.trim(),
         role,
-        managerId: role === "User" && selectedManager ? selectedManager : null, // Ensure null, not undefined
+        managerId: role === "User" && selectedManager ? selectedManager : null,
+        expoPushToken: "", // Will be populated when user logs in
       });
 
-      // Reset fields adding user
       setName("");
       setEmail("");
       setPassword("");
@@ -83,24 +98,32 @@ const AdminDashboard = () => {
       setSelectedManager("");
 
       Alert.alert("Success", "User added successfully.");
+
+      // Check if the user has a push token already (probably not yet, but included here for completeness)
+      const newUser = users.find((u) => u.email === email);
+      if (newUser?.expoPushToken) {
+        await sendPushNotification(
+          newUser.expoPushToken,
+          "Account Created",
+          "Welcome! Your account has been set up."
+        );
+      }
     } catch (error) {
-      console.error("Error adding user: ", error);
+      console.error("Error adding user:", error);
       Alert.alert("Error", "Failed to add user.");
     }
   };
 
-  // Delete User
   const deleteUser = async (userId: string) => {
     try {
       await deleteDoc(doc(firestore, "users", userId));
       Alert.alert("Success", "User deleted successfully.");
     } catch (error) {
-      console.error("Error deleting user: ", error);
+      console.error("Error deleting user:", error);
       Alert.alert("Error", "Failed to delete user.");
     }
   };
 
-  // Update User Role (Promote/Demote)
   const updateUserRole = async (userId: string, currentRole: "Manager" | "User") => {
     try {
       const newRole = currentRole === "User" ? "Manager" : "User";
@@ -108,19 +131,18 @@ const AdminDashboard = () => {
 
       Alert.alert("Success", `User role updated to ${newRole}.`);
     } catch (error) {
-      console.error("Error updating user role: ", error);
+      console.error("Error updating user role:", error);
       Alert.alert("Error", "Failed to update user role.");
     }
   };
 
-  // Logout and Navigate to Login Page
   const handleLogout = async () => {
     try {
       await signOut(auth);
       Alert.alert("Success", "Logged out successfully.");
-      navigation.navigate("Login"); // Navigate to the Login screen
+      navigation.navigate("Login");
     } catch (error) {
-      console.error("Error logging out: ", error);
+      console.error("Error logging out:", error);
       Alert.alert("Error", "Failed to log out.");
     }
   };
@@ -130,7 +152,7 @@ const AdminDashboard = () => {
       {/* Header */}
       <View style={tw`flex-row justify-between items-center mb-6`}>
         <Text style={tw`text-2xl font-bold text-gray-800`}>Admin Dashboard</Text>
-        <TouchableOpacity onPress={handleLogout} style={tw`bg-red-500 px-4 py-2 rounded-lg`} >
+        <TouchableOpacity onPress={handleLogout} style={tw`bg-red-500 px-4 py-2 rounded-lg`}>
           <Text style={tw`text-white font-bold`}>Logout</Text>
         </TouchableOpacity>
       </View>
@@ -139,11 +161,9 @@ const AdminDashboard = () => {
       <View style={tw`bg-white p-6 rounded-lg shadow-md mb-6`}>
         <Text style={tw`text-lg font-bold text-gray-800 mb-4`}>Add New User</Text>
 
-        <TextInput style={tw`border border-gray-300 rounded-lg p-3 mb-4`} placeholder="Enter name" value={name} onChangeText={setName}/>
-
+        <TextInput style={tw`border border-gray-300 rounded-lg p-3 mb-4`} placeholder="Enter name" value={name} onChangeText={setName} />
         <TextInput style={tw`border border-gray-300 rounded-lg p-3 mb-4`} placeholder="Enter email" value={email} onChangeText={setEmail} />
-
-        <TextInput  style={tw`border border-gray-300 rounded-lg p-3 mb-4`}  placeholder="Enter password"  secureTextEntry  value={password}  onChangeText={setPassword}/>
+        <TextInput style={tw`border border-gray-300 rounded-lg p-3 mb-4`} placeholder="Enter password" secureTextEntry value={password} onChangeText={setPassword} />
 
         <Text style={tw`text-gray-700 mb-2`}>Select Role:</Text>
         <Picker selectedValue={role} style={tw`bg-white border border-gray-300 rounded-lg mb-4`} onValueChange={(itemValue) => setRole(itemValue)}>
@@ -182,8 +202,6 @@ const AdminDashboard = () => {
                 Managed by: {managers.find((m) => m.id === item.managerId)?.name || "Unknown"}
               </Text>
             )}
-
-            {/* Action Buttons */}
             <View style={tw`flex-row mt-3`}>
               <TouchableOpacity onPress={() => deleteUser(item.id)} style={tw`bg-red-500 px-4 py-2 rounded-lg mr-2`}>
                 <Text style={tw`text-white font-bold`}>Delete</Text>
